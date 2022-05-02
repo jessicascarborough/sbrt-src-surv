@@ -57,6 +57,8 @@ surv_lc <- Surv(time = data_tidy$Local.Failure.Time,
 surv_chemo <- Surv(time = data_tidy$Chemo.Time,
                 event = data_tidy$Chemo.Index)
 
+?Surv
+
 ```
 
 ## Cox PH model
@@ -75,7 +77,7 @@ coxph(surv_os ~ tumor_size + `Age.at.Diagnosis` + `KPS` + `NEW.HISTOLOGY`, data 
 
 ### LC
 
-First we'll predict LS using tumor size as univariate predictor. Then, we'll use tumor size, age at diagnosis, KP and histology as predictors. 
+Next, we'll predict LS using tumor size as univariate predictor. Then, we'll use tumor size, age at diagnosis, KP and histology as predictors. 
 
 ```{r cox_size_lc}
 
@@ -89,12 +91,9 @@ coxph(surv_lc ~ tumor_size + `Age.at.Diagnosis` + `KPS` + `NEW.HISTOLOGY`, data 
 
 We want to find the optimal single cutpoint for tumor size and the optimal two cutpoints for tumor size. To do this we will sweep through all possible single (`sweep_cutpoints1`) and double cutpoints (`sweep_cutpoints2`) and select the optimal ones based on discrimination in survival outcomes. We will store our single optimal cutpoint as `single_cutpoint_best` and double optimal cutpoint as `double_cutpoint_best`.
 
-### OS
+### Cutpoint Functions
 
-
-#### Find cutoffs
-
-```{r find_cutpoint_os}
+```{r find_cutpoint_func}
 
 sweep_cutpoints1 <- function(tidy_data, surv_obj){
    cutpoints = quantile(tidy_data$pred_var, prob = seq(0, 1, 0.01))[-(1:5)]
@@ -121,16 +120,6 @@ sweep_cutpoints1 <- function(tidy_data, surv_obj){
       ungroup()
 }
 
-cutpoints_1_os <- sweep_cutpoints1(data_tidy, surv_os)
-saveRDS(cutpoints_1_os, here("results", "all_cutpoints1_os.rds"))
-
-cutpoints_1_n5_os <- cutpoints_1_os %>%
-   filter(min_n >= 5) %>% #require at least 4 samples in each group
-   filter(chisq == max(chisq)) # cutpoints with the highest chisq result
-
-# they all cut the data with the same samples in each group
-# taking the median to get a single value
-single_cutpoint_best_os <- median(cutpoints_1_n5_os$cutpoint) 
 
 sweep_cutpoints2 <- function(tidy_data, surv_obj){
    cutpoints_first = quantile(tidy_data$pred_var, prob = seq(0, 1, 0.01))[-(1:5)]
@@ -142,7 +131,7 @@ sweep_cutpoints2 <- function(tidy_data, surv_obj){
    high_n_vec <- c()
    chisq_vec <- c()
    for (i in 1:length(cutpoints_first)){
-      pred_var_after_cutoff <- tidy_data$pred_var[tidy_data$pred_var > min(cutpoints_first)]
+      pred_var_after_cutoff <- tidy_data$pred_var[tidy_data$pred_var > min(cutpoints_first[])]
       cutpoints_second <- quantile(pred_var_after_cutoff, prob = seq(0, 1, 0.01))[-(1:5)]
       cutpoints_second <- cutpoints_second[-(96:101)]
       for (j in 1:length(cutpoints_second)){
@@ -171,6 +160,71 @@ sweep_cutpoints2 <- function(tidy_data, surv_obj){
       ungroup()
 }
 
+sweep_cutpoints2 <- function(tidy_data, surv_obj){
+   cutpoints_first = quantile(tidy_data$pred_var, prob = seq(0, 1, 0.01))[-(1:5)]
+   cutpoints_first = cutpoints_first[-(96:101)]
+   cutpoint_first_vec <- c()
+   cutpoint_second_vec <- c()
+   low_n_vec <- c()
+   middle_n_vec <- c()
+   high_n_vec <- c()
+   chisq_vec <- c()
+   for (i in 1:length(cutpoints_first)){
+      pred_var_after_cutoff <- tidy_data$pred_var[tidy_data$pred_var > cutpoints_first[i]]
+      cutpoints_second <- quantile(pred_var_after_cutoff, prob = seq(0, 1, 0.01))[-(1:5)]
+      cutpoints_second <- cutpoints_second[-(96:101)]
+      for (j in 1:length(cutpoints_second)){
+         tidy_data_labs <- tidy_data %>%
+            mutate(pred_group = case_when(pred_var <= cutpoints_first[i] ~ "low", 
+                                          pred_var > cutpoints_first[i] &
+                                             pred_var <= cutpoints_second[j] ~ "middle", 
+                                          pred_var > cutpoints_second[j] ~ "high"))
+         survdiff_results <- survdiff(surv_obj ~ pred_group, data = tidy_data_labs)
+         chisq_vec <- c(chisq_vec, survdiff_results$chisq)
+         cutpoint_first_vec <- c(cutpoint_first_vec, cutpoints_first[[i]])
+         cutpoint_second_vec <- c(cutpoint_second_vec, cutpoints_second[[j]])
+         low_n_vec <- c(low_n_vec, nrow(tidy_data_labs %>% filter(pred_group == "low")))
+         middle_n_vec <- c(middle_n_vec, nrow(tidy_data_labs %>% filter(pred_group == "middle")))
+         high_n_vec <- c(high_n_vec, nrow(tidy_data_labs %>% filter(pred_group == "high")))
+      }
+   }
+   data.frame(cutpoint1 = cutpoint_first_vec,
+              cutpoint2 = cutpoint_second_vec,
+              low_n = low_n_vec,
+              middle_n = middle_n_vec,
+              high_n = high_n_vec,
+              chisq = chisq_vec) %>%
+      rowwise() %>%
+      mutate(min_n = min(low_n, middle_n, high_n)) %>%
+      ungroup()
+}
+
+```
+
+
+### OS
+
+
+#### Find cutoffs
+
+```{r find_cutpoint_os}
+
+# single cutpoint
+
+cutpoints_1_os <- sweep_cutpoints1(data_tidy, surv_os)
+saveRDS(cutpoints_1_os, here("results", "all_cutpoints1_os.rds"))
+
+cutpoints_1_n5_os <- cutpoints_1_os %>%
+   filter(min_n >= 5) %>% #require at least 4 samples in each group
+   filter(chisq == max(chisq)) # cutpoints with the highest chisq result
+
+
+# they all cut the data with the same samples in each group
+# taking the median to get a single value
+single_cutpoint_best_os <- median(cutpoints_1_n5_os$cutpoint) 
+
+
+# double cutpoint
 
 cutpoints_2_os <- sweep_cutpoints2(data_tidy, surv_os)
 saveRDS(cutpoints_2_os, here("results", "all_cutpoints2_os.rds"))
@@ -238,17 +292,25 @@ gg_int <- ggsurvplot(km_int, data = data_class_os,
    xlab = "OS (months)", # adjust X axis label
    # xlim = c(0, 190),
    break.time.by = 24, # add tick every 12 months
-   title = "OS - Intercept only",
+   # title = "OS - Intercept only",
    ggtheme = theme_bw() + theme(plot.title = element_text(hjust = 0.5))
    )
 
-gg_int
+combo_os_int <- gg_int$plot + gg_int$table +
+   plot_layout(nrow = 2, ncol = 1, heights = c(3, 1))
+
+combo_os_int
+
+ggsave(filename = here("results", "surv_os_int_only.png"), 
+       plot = combo_os_int, height = 5, width = 5)
 
 ## ## ## ## ## ## ## ## ## ## ## ## ## ## ## ## ## ## ## ## ## ## ## ## ##
 
 ## Top/bottom halves
 
 km_grp2_med <- survfit(surv_os ~ data_class_os$pred_grp2_med)
+
+?ggsurvplot
 
 gg_grp2_med <- ggsurvplot(km_grp2_med, data = data_class_os, size = 1,
    palette = c("indianred3", "dodgerblue3"), # custom colors
@@ -266,7 +328,7 @@ gg_grp2_med <- ggsurvplot(km_grp2_med, data = data_class_os, size = 1,
    # labels are opposite of "Cissig score, where higher equals better outcomes
    # title = "CisSig Score Cohorts - Yes Cisplatin",
    legend.labs = c("Small (< median)", "Large (>= median)"),
-   title = "OS - Preset Cutoff (Median)",
+   # title = "OS - Preset Cutoff (Median)",
    ggtheme = theme_bw() + theme(plot.title = element_text(hjust = 0.5))
    )
 
@@ -294,7 +356,7 @@ gg_grp2_opt <- ggsurvplot(km_grp2_opt, data = data_class_os, size = 1,
    # "Top third Lin Pred."), # labels
    # title = "CisSig Score 2 Cohorts (optimal) - Yes Cisplatin",
    legend.labs = c("Small (< 1.95 cm)", "Large (>= 1.95 cm)"),
-   title = "OS - Optimal Cutoff",
+   # title = "OS - Optimal Cutoff",
    ggtheme = theme_bw() + theme(plot.title = element_text(hjust = 0.5))
    )
 
@@ -321,7 +383,7 @@ gg_grp3_tert <- ggsurvplot(km_grp3_tert3, data = data_class_os, size = 1,
    # "Top third Lin Pred."), # labels
    # title = "CisSig Score Tertile Cohorts (by 33%) - Yes Cisplatin",
    legend.labs = c("Smallest 33%", "Middle 33%", "Largest 33%"),
-   title = "OS - Preset Cutoffs (Tertiles)",
+   # title = "OS - Preset Cutoffs (Tertiles)",
    ggtheme = theme_bw() + theme(plot.title = element_text(hjust = 0.5))
    )
 
@@ -348,7 +410,7 @@ gg_grp3_manual <- ggsurvplot(km_grp3_manual, data = data_class_os, size = 1,
    # "Top 25% Lin Pred."), # labels
    # title = "CisSig Score Tertile Cohorts (by 25/50/25%) - Yes Cisplatin",
    legend.labs = c("Small (0-2 cm)", "Medium (2-4 cm)", "Largest (4+ cm)"),
-   title = "OS - Preset Cutoffs (0-2, 2-4, 4+)",
+   # title = "OS - Preset Cutoffs (0-2, 2-4, 4+)",
    ggtheme = theme_bw() + theme(plot.title = element_text(hjust = 0.5))
    )
 
@@ -375,7 +437,7 @@ gg_grp3_opt <- ggsurvplot(km_grp3_opt, data = data_class_os, size = 1,
    # "Top third Lin Pred."), # labels
    # title = "CisSig Score Tertile Cohorts (optimal) - Yes Cisplatin",
    legend.labs = c("Small (0-1.41 cm)", "Medium (1.41-1.94 cm)", "Largest (1.94+ cm)"),
-   title = "OS - Optimal Cutoffs",
+   # title = "OS - Optimal Cutoffs",
    ggtheme = theme_bw() + theme(plot.title = element_text(hjust = 0.5))
    )
 
@@ -390,26 +452,26 @@ gg_grp3_opt
 
 ```{r combo_plot_os}
 
-combo_plot_preset <- gg_grp2_med$plot + gg_grp3_manual$plot + 
-   gg_grp2_med$table + gg_grp3_manual$table +
-   plot_layout(nrow = 2, ncol = 2, heights = c(2, 2))
+combo_plot_preset <- gg_grp2_med$plot + gg_grp2_med$table + 
+   gg_grp3_manual$plot + gg_grp3_manual$table +
+   plot_layout(nrow = 4, ncol = 1, heights = c(3, 1))
 
 combo_plot_preset
 
 ggsave(filename = here("results", "surv_os_plots_preset.png"), 
-       plot = combo_plot_preset, height = 4, width = 12)
+       plot = combo_plot_preset, height = 10, width = 7)
 
 
 
 
-combo_plot_opt <- gg_grp2_opt$plot + gg_grp3_opt$plot + 
-   gg_grp2_opt$table + gg_grp3_opt$table +
-   plot_layout(nrow = 2, ncol = 2, heights = c(2, 2))
+combo_plot_opt <- gg_grp2_opt$plot + gg_grp2_opt$table +
+   gg_grp3_opt$plot + gg_grp3_opt$table +
+   plot_layout(nrow = 4, ncol = 1, heights = c(3, 1))
 
 combo_plot_opt
 
 ggsave(filename = here("results", "surv_os_plots_opt.png"), 
-       plot = combo_plot_opt, height = 4, width = 12)
+       plot = combo_plot_opt, height = 10, width = 7)
 
 ```
 
@@ -421,30 +483,6 @@ ggsave(filename = here("results", "surv_os_plots_opt.png"),
 
 ```{r find_cutpoint_lc}
 
-sweep_cutpoints1 <- function(tidy_data, surv_obj){
-   cutpoints = quantile(tidy_data$pred_var, prob = seq(0, 1, 0.01))[-(1:5)]
-   cutpoints = cutpoints[-(96:101)]
-   cutpoint_vec <- c()
-   chisq_vec <- c()
-   low_n_vec <- c()
-   high_n_vec <- c()
-   for (i in 1:length(cutpoints)){
-      tidy_data_labs <- tidy_data %>%
-         mutate(pred_group = ifelse(pred_var <= cutpoints[i], "low", "high"))
-      survdiff_results <- survdiff(surv_obj ~ pred_group, data = tidy_data_labs)
-      chisq_vec <- c(chisq_vec, survdiff_results$chisq)
-      cutpoint_vec <- c(cutpoint_vec, cutpoints[i])
-      low_n_vec <- c(low_n_vec, nrow(tidy_data_labs %>% filter(pred_group == "low")))
-      high_n_vec <- c(high_n_vec, nrow(tidy_data_labs %>% filter(pred_group == "high")))
-   }
-   data.frame(cutpoint = cutpoint_vec, 
-              low_n = low_n_vec,
-              high_n = high_n_vec,
-              chisq = chisq_vec) %>%
-      rowwise() %>%
-      mutate(min_n = min(low_n, high_n)) %>%
-      ungroup()
-}
 
 cutpoints_1_lc <- sweep_cutpoints1(data_tidy, surv_lc)
 saveRDS(cutpoints_1_lc, here("results", "all_cutpoints1_lc.rds"))
@@ -456,46 +494,6 @@ cutpoints_1_n5_lc <- cutpoints_1_lc %>%
 # they all cut the data with the same samples in each group
 # taking the median to get a single value
 single_cutpoint_best_lc <- median(cutpoints_1_n5_lc$cutpoint) 
-
-sweep_cutpoints2 <- function(tidy_data, surv_obj){
-   cutpoints_first = quantile(tidy_data$pred_var, prob = seq(0, 1, 0.01))[-(1:5)]
-   cutpoints_first = cutpoints_first[-(96:101)]
-   cutpoint_first_vec <- c()
-   cutpoint_second_vec <- c()
-   low_n_vec <- c()
-   middle_n_vec <- c()
-   high_n_vec <- c()
-   chisq_vec <- c()
-   for (i in 1:length(cutpoints_first)){
-      pred_var_after_cutoff <- tidy_data$pred_var[tidy_data$pred_var > min(cutpoints_first)]
-      cutpoints_second <- quantile(pred_var_after_cutoff, prob = seq(0, 1, 0.01))[-(1:5)]
-      cutpoints_second <- cutpoints_second[-(96:101)]
-      for (j in 1:length(cutpoints_second)){
-         tidy_data_labs <- tidy_data %>%
-            mutate(pred_group = case_when(pred_var <= cutpoints_first[i] ~ "low", 
-                                          pred_var > cutpoints_first[i] &
-                                             pred_var <= cutpoints_second[j] ~ "middle", 
-                                          pred_var > cutpoints_second[j] ~ "high"))
-         survdiff_results <- survdiff(surv_obj ~ pred_group, data = tidy_data_labs)
-         chisq_vec <- c(chisq_vec, survdiff_results$chisq)
-         cutpoint_first_vec <- c(cutpoint_first_vec, cutpoints_first[[i]])
-         cutpoint_second_vec <- c(cutpoint_second_vec, cutpoints_second[[j]])
-         low_n_vec <- c(low_n_vec, nrow(tidy_data_labs %>% filter(pred_group == "low")))
-         middle_n_vec <- c(middle_n_vec, nrow(tidy_data_labs %>% filter(pred_group == "middle")))
-         high_n_vec <- c(high_n_vec, nrow(tidy_data_labs %>% filter(pred_group == "high")))
-      }
-   }
-   data.frame(cutpoint1 = cutpoint_first_vec,
-              cutpoint2 = cutpoint_second_vec,
-              low_n = low_n_vec,
-              middle_n = middle_n_vec,
-              high_n = high_n_vec,
-              chisq = chisq_vec) %>%
-      rowwise() %>%
-      mutate(min_n = min(low_n, middle_n, high_n)) %>%
-      ungroup()
-}
-
 
 cutpoints_2_lc <- sweep_cutpoints2(data_tidy, surv_lc)
 saveRDS(cutpoints_2_lc, here("results", "all_cutpoints2_lc.rds"))
@@ -563,11 +561,17 @@ gg_int <- ggsurvplot(km_int, data = data_class_lc,
    xlab = "Local Control Failure (months)", # adjust X axis label
    # xlim = c(0, 190),
    break.time.by = 24, # add tick every 12 months
-   title = "LC - Intercept only",
+   # title = "LC - Intercept only",
    ggtheme = theme_bw() + theme(plot.title = element_text(hjust = 0.5))
    )
 
-gg_int
+combo_lc_int <- gg_int$plot + gg_int$table +
+   plot_layout(nrow = 2, ncol = 1, heights = c(3, 1))
+
+combo_lc_int
+
+ggsave(filename = here("results", "surv_lc_int_only.png"), 
+       plot = combo_lc_int, height = 5, width = 5)
 
 ## ## ## ## ## ## ## ## ## ## ## ## ## ## ## ## ## ## ## ## ## ## ## ## ##
 
@@ -591,7 +595,7 @@ gg_grp2_med <- ggsurvplot(km_grp2_med, data = data_class_lc, size = 1,
    # labels are opposite of "Cissig score, where higher equals better outcomes
    # title = "CisSig Score Cohorts - Yes Cisplatin",
    legend.labs = c("Small (< median)", "Large (>= median)"),
-   title = "LC - Preset Cutoff (Median)",
+   # title = "LC - Preset Cutoff (Median)",
    ggtheme = theme_bw() + theme(plot.title = element_text(hjust = 0.5))
    )
 
@@ -619,7 +623,7 @@ gg_grp2_opt <- ggsurvplot(km_grp2_opt, data = data_class_lc, size = 1,
    # "Top third Lin Pred."), # labels
    # title = "CisSig Score 2 Cohorts (optimal) - Yes Cisplatin",
    legend.labs = c("Small (< 1.95 cm)", "Large (>= 1.95 cm)"),
-   title = "LC - Optimal Cutoff",
+   # title = "LC - Optimal Cutoff",
    ggtheme = theme_bw() + theme(plot.title = element_text(hjust = 0.5))
    )
 
@@ -646,7 +650,7 @@ gg_grp3_tert <- ggsurvplot(km_grp3_tert3, data = data_class_lc, size = 1,
    # "Top third Lin Pred."), # labels
    # title = "CisSig Score Tertile Cohorts (by 33%) - Yes Cisplatin",
    legend.labs = c("Smallest 33%", "Middle 33%", "Largest 33%"),
-   title = "LC - Preset Cutoffs (Tertiles)",
+   # title = "LC - Preset Cutoffs (Tertiles)",
    ggtheme = theme_bw() + theme(plot.title = element_text(hjust = 0.5))
    )
 
@@ -673,7 +677,7 @@ gg_grp3_manual <- ggsurvplot(km_grp3_manual, data = data_class_lc, size = 1,
    # "Top 25% Lin Pred."), # labels
    # title = "CisSig Score Tertile Cohorts (by 25/50/25%) - Yes Cisplatin",
    legend.labs = c("Small (0-2 cm)", "Medium (2-4 cm)", "Largest (4+ cm)"),
-   title = "LC - Preset Cutoffs (0-2, 2-4, 4+)",
+   # title = "LC - Preset Cutoffs (0-2, 2-4, 4+)",
    ggtheme = theme_bw() + theme(plot.title = element_text(hjust = 0.5))
    )
 
@@ -700,7 +704,7 @@ gg_grp3_opt <- ggsurvplot(km_grp3_opt, data = data_class_lc, size = 1,
    # "Top third Lin Pred."), # labels
    # title = "CisSig Score Tertile Cohorts (optimal) - Yes Cisplatin",
    legend.labs = c("Small (0-1.0 cm)", "Medium (1.0-3.94 cm)", "Largest (3.93+ cm)"),
-   title = "LC - Optimal Cutoffs",
+   # title = "LC - Optimal Cutoffs",
    ggtheme = theme_bw() + theme(plot.title = element_text(hjust = 0.5))
    )
 
@@ -716,26 +720,24 @@ gg_grp3_opt
 
 ```{r combo_plot_lc}
 
-combo_plot_preset <- gg_grp2_med$plot + gg_grp3_manual$plot + 
-   gg_grp2_med$table + gg_grp3_manual$table +
-   plot_layout(nrow = 2, ncol = 2, heights = c(2, 2))
+combo_plot_preset <- gg_grp2_med$plot + gg_grp2_med$table + 
+   gg_grp3_manual$plot + gg_grp3_manual$table +
+   plot_layout(nrow = 4, ncol = 1, heights = c(3, 1))
 
 combo_plot_preset
 
 ggsave(filename = here("results", "surv_lc_plots_preset.png"), 
-       plot = combo_plot_preset, height = 4, width = 12)
+       plot = combo_plot_preset, height = 10, width = 7)
 
 
-
-
-combo_plot_opt <- gg_grp2_opt$plot + gg_grp3_opt$plot + 
-   gg_grp2_opt$table + gg_grp3_opt$table +
-   plot_layout(nrow = 2, ncol = 2, heights = c(2, 2))
+combo_plot_opt <- gg_grp2_opt$plot + gg_grp2_opt$table + 
+   gg_grp3_opt$plot + gg_grp3_opt$table +
+   plot_layout(nrow = 4, ncol = 1, heights = c(3, 1))
 
 combo_plot_opt
 
 ggsave(filename = here("results", "surv_lc_plots_opt.png"), 
-       plot = combo_plot_opt, height = 4, width = 12)
+       plot = combo_plot_opt, height = 10, width = 7)
 
 ```
 
@@ -757,16 +759,28 @@ gg_int <- ggsurvplot(km_int, data = data_class_lc,
    risk.table = TRUE, # Add risk table
    xlab = "Chemotherapy Free Survival (months)", # adjust X axis label
    break.time.by = 24, # add tick every 12 months
-   title = "Chemotherapy Free Survival - Intercept only",
+   # title = "Chemotherapy Free Survival - Intercept only",
    ggtheme = theme_bw() + theme(plot.title = element_text(hjust = 0.5))
    )
 
-gg_int
+combo_chemo_int <- gg_int$plot + gg_int$table +
+   plot_layout(nrow = 2, ncol = 1, heights = c(3, 1))
+
+combo_chemo_int
+
+ggsave(filename = here("results", "surv_chemo_int_only.png"), 
+       plot = combo_chemo_int, height = 5, width = 5)
+
+
 
 ## ## ## ## ## ## ## ## ## ## ## ## ## ## ## ## ## ## ## ## ## ## ## ## ##
 
 ```
 
+```{r session_info}
 
+sessionInfo()
+
+```
 
 
